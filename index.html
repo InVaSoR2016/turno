@@ -373,28 +373,39 @@ footer { text-align: center; padding: 2rem 0 1rem; font-family: 'DM Mono', monos
 <div class="overlay" id="ov-setup">
   <div class="setup-box">
     <div class="mtitle">Configurar sincronización compartida</div>
-    <div class="msub">Conecta JSONBin para que todos los turnos lean y guarden los mismos datos.</div>
+    <div class="msub">Sigue estos pasos en orden. Solo lo hace una persona — los demás solo pegan los datos.</div>
 
     <div class="setup-step">
-      <strong>Paso 1</strong> — Ve a <a href="https://jsonbin.io" target="_blank" style="color:var(--accent2)">jsonbin.io</a> y crea una cuenta gratuita.
+      <strong>Paso 1</strong> — Ve a <a href="https://jsonbin.io" target="_blank" style="color:var(--accent2)">jsonbin.io</a> → Sign Up gratis → entra a tu cuenta.
     </div>
     <div class="setup-step">
-      <strong>Paso 2</strong> — En el panel, ve a <code>API Keys</code> → crea una key y cópiala aquí abajo.
+      <strong>Paso 2 — Crear el Bin</strong><br>
+      Menú izquierdo → <code>Bins</code> → <code>+ Create Bin</code> → borra el contenido y escribe <code>{"init":true}</code> → <code>Create</code>.<br>
+      Luego abre el Bin creado → clic en <code>Settings</code> → activa <code>Make bin public</code> → guarda.
     </div>
     <div class="setup-step">
-      <strong>Paso 3</strong> — Crea un nuevo Bin con este JSON inicial: <code>{"init":true}</code>. Copia el <code>BIN ID</code> (el número largo en la URL).
+      <strong>Paso 3 — Copiar el Bin ID</strong><br>
+      En la URL del navegador verás algo como <code>jsonbin.io/b/<strong>64f3a1...</strong>/edit</code> — ese número largo es el Bin ID.
+    </div>
+    <div class="setup-step">
+      <strong>Paso 4 — API Key</strong><br>
+      Menú izquierdo → <code>API Keys</code> → <code>+ Create API Key</code> → nombre: <code>turnos</code> → crea y copia la key.
     </div>
 
     <div class="setup-fg">
       <label>API Key de JSONBin</label>
-      <input type="text" id="cfg-apikey" placeholder="$2b$10$xxxxxxxxxxxxxxxxxxxxxxxx..." />
+      <input type="password" id="cfg-apikey" placeholder="$2b$10$xxxxxxxxxxxxxxxxxxxxxxxx..." />
     </div>
     <div class="setup-fg">
       <label>Bin ID</label>
       <input type="text" id="cfg-binid" placeholder="64f3a1b2c8a3e2d4f5e6b7c8..." />
     </div>
 
-    <div class="mactions" style="margin-top:1.25rem">
+    <div style="background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.2);border-radius:8px;padding:.75rem 1rem;font-size:.78rem;color:var(--yellow);margin:.75rem 0">
+      ⚠ Comparte la API Key y el Bin ID solo por mensaje privado con tu equipo — no los publiques en ningún lado.
+    </div>
+
+    <div class="mactions" style="margin-top:1rem">
       <button class="btn btn-ghost" onclick="closeOv('ov-setup')">Cancelar</button>
       <button class="btn" style="background:rgba(91,127,255,.15);color:var(--accent2);border:1px solid rgba(91,127,255,.3)" onclick="guardarConfig()">Conectar y sincronizar</button>
     </div>
@@ -436,11 +447,14 @@ function loadState() {
     const r = localStorage.getItem(KEY);
     if (r) {
       const s = JSON.parse(r);
-      if (!Array.isArray(s.personas))  s.personas  = ["Mario","Claudia","Katherine","Leila","Pacho"];
-      if (!Array.isArray(s.novedades)) s.novedades = [];
-      if (!Array.isArray(s.casos))     s.casos     = [];
-      if (!Array.isArray(s.historial)) s.historial = [];
-      if (typeof s.nextIdx !== 'number') s.nextIdx = 0;
+      if (!Array.isArray(s.personas))    s.personas  = ["Mario","Claudia","Katherine","Leila","Pacho"];
+      if (!Array.isArray(s.novedades))   s.novedades = [];
+      if (!Array.isArray(s.casos))       s.casos     = [];
+      if (!Array.isArray(s.historial))   s.historial = [];
+      // IMPORTANTE: solo fijamos nextIdx a 0 si no existe en absoluto
+      if (typeof s.nextIdx !== 'number' || s.nextIdx < 0) s.nextIdx = 0;
+      // Asegurar que nextIdx no esté fuera de rango
+      if (s.nextIdx >= s.personas.length) s.nextIdx = 0;
       return s;
     }
   } catch(e) { console.warn(e); }
@@ -470,7 +484,7 @@ async function syncUp() {
   if (!cfg.apikey || !cfg.binid) return;
   setSyncBadge('busy', 'guardando…');
   try {
-    const r = await fetch(`https://api.jsonbin.io/v3/b/${cfg.binid}`, {
+    const r = await fetch('https://api.jsonbin.io/v3/b/' + cfg.binid, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -480,8 +494,9 @@ async function syncUp() {
       body: JSON.stringify(S)
     });
     if (!r.ok) {
-      const txt = await r.text();
-      throw new Error(r.status + ' ' + txt);
+      const txt = await r.text().catch(()=>'');
+      console.warn('syncUp HTTP ' + r.status, txt);
+      throw new Error(r.status);
     }
     setSyncBadge('ok', 'sincronizado · ' + new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'}));
   } catch(e) {
@@ -490,18 +505,29 @@ async function syncUp() {
   }
 }
 
-async function syncDown(silent = false) {
+async function syncDown(silent) {
   const cfg = loadCfg();
   if (!cfg.apikey || !cfg.binid) { setSyncBadge('local', 'solo local'); return; }
   if (!silent) setSyncBadge('busy', 'cargando…');
   try {
-    const r = await fetch(`https://api.jsonbin.io/v3/b/${cfg.binid}/latest`, {
-      headers: { 'X-Master-Key': cfg.apikey, 'X-Bin-Meta': 'false' }
+    // Usar Access Key para lectura pública si existe, sino Master Key
+    const readKey = cfg.accesskey || cfg.apikey;
+    const r = await fetch('https://api.jsonbin.io/v3/b/' + cfg.binid + '/latest', {
+      headers: {
+        'X-Master-Key': cfg.apikey,
+        'X-Access-Key': readKey,
+        'X-Bin-Meta': 'false'
+      }
     });
-    if (!r.ok) throw new Error(r.status);
+    if (!r.ok) {
+      const txt = await r.text().catch(()=>'');
+      console.warn('syncDown HTTP ' + r.status, txt);
+      throw new Error(r.status);
+    }
     const resp = await r.json();
-    // JSONBin v3 envuelve la data en { record: {...} }
-    const data = resp.record !== undefined ? resp.record : resp;
+    console.log('syncDown raw:', resp);
+    // JSONBin v3 puede devolver { record: {...} } o directo {}
+    const data = (resp && resp.record !== undefined) ? resp.record : resp;
     if (data && typeof data === 'object' && !data.init) {
       if (!Array.isArray(data.personas))    data.personas  = S.personas;
       if (!Array.isArray(data.novedades))   data.novedades = [];
@@ -514,7 +540,7 @@ async function syncDown(silent = false) {
     }
     setSyncBadge('ok', 'sincronizado · ' + new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'}));
   } catch(e) {
-    setSyncBadge('error', 'sin conexión');
+    setSyncBadge('error', 'sin conexión — revisa F12');
     console.warn('syncDown error', e);
   }
 }
@@ -816,19 +842,44 @@ function openCerrar() {
 function cerrarTurno() {
   const ini=new Date(S.turnoInicio).toLocaleDateString('es-CO',{day:'numeric',month:'short'});
   const fin=new Date(S.turnoFin).toLocaleDateString('es-CO',{day:'numeric',month:'short'});
-  const ultimo=S.casos.length?S.casos[S.casos.length-1].persona:'—';
-  S.historial.push({inicio:ini,fin:fin,ultimoEn:ultimo,casos:S.casos.length});
-  const ps=personas(), iU=ps.indexOf(ultimo);
-  S.nextIdx=ps.length?(iU>=0?(iU+1)%ps.length:0):0;
-  // Nuevo turno: próximo martes
+
+  // El último en recibir caso — si no hubo casos, usamos quien era el "siguiente"
+  // menos uno (el último que recibió en el turno anterior)
+  const ps = personas();
+  let ultimo = '—';
+  let nuevoNextIdx = S.nextIdx; // por defecto conservamos el índice actual
+
+  if (S.casos.length > 0) {
+    // Hubo casos: el último en recibir es el de la última entrada
+    ultimo = S.casos[S.casos.length-1].persona;
+    const iU = ps.indexOf(ultimo);
+    // El siguiente es quien va después del último que recibió
+    nuevoNextIdx = iU >= 0 ? (iU + 1) % ps.length : S.nextIdx;
+  } else {
+    // No hubo casos: conservamos el nextIdx tal como está
+    // El "último" sería quien estaba antes del siguiente actual
+    const iActual = idx();
+    const iUltimo = iActual === 0 ? ps.length - 1 : iActual - 1;
+    ultimo = ps[iUltimo] || '—';
+    nuevoNextIdx = S.nextIdx; // no cambia
+  }
+
+  S.historial.push({ inicio:ini, fin:fin, ultimoEn:ultimo, casos:S.casos.length });
+  S.nextIdx = nuevoNextIdx;
+
+  // Nuevo turno: próximo martes después del lunes actual
   const nuevoIni = new Date(S.turnoFin);
-  nuevoIni.setDate(nuevoIni.getDate() + 1); // día siguiente al lunes = martes
+  nuevoIni.setDate(nuevoIni.getDate() + 1);
   nuevoIni.setHours(0,0,0,0);
   const nuevoFin = finTurnoDesde(nuevoIni);
-  S.casos=[]; S.novedades=[];
-  S.turnoInicio=nuevoIni.toISOString(); S.turnoFin=nuevoFin.toISOString();
+
+  S.casos = [];
+  S.novedades = [];
+  S.turnoInicio = nuevoIni.toISOString();
+  S.turnoFin = nuevoFin.toISOString();
+
   save(); closeOv('ov-cerrar'); render();
-  toast('Turno cerrado — nuevo turno iniciado ✓');
+  toast('Turno cerrado — siguiente: ' + (ps[S.nextIdx] || '—') + ' ✓');
 }
 
 function limpiarF() {
