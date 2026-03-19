@@ -433,14 +433,13 @@ function finTurnoDesde(inicio) {
   return d;
 }
 
+// ── JSONBIN CONFIG (ya integrado — no necesitas configurar nada) ──────────
+const BIN_ID     = '69baf679b7ec241ddc7e6857';
+const MASTER_KEY = '$2a$10$/e.erxo2MaQmW9etIvwNVueIYkJjO0fUqekawDmi7RPzzodJJKvT.';
+const ACCESS_KEY = '$2a$10$djeVntW16/K3tFYZvS29Yu5HoHVPYa00wl70TjgyiLAls6crRi/RC';
+
 // ── STATE ────────────────────────────────────────────────────────────────
 const KEY = 'urgentes_v3';
-const CFG_KEY = 'urgentes_cfg';
-
-function loadCfg() {
-  try { return JSON.parse(localStorage.getItem(CFG_KEY)) || {}; } catch(e) { return {}; }
-}
-function saveCfg(c) { localStorage.setItem(CFG_KEY, JSON.stringify(c)); }
 
 function loadState() {
   try {
@@ -451,9 +450,7 @@ function loadState() {
       if (!Array.isArray(s.novedades))   s.novedades = [];
       if (!Array.isArray(s.casos))       s.casos     = [];
       if (!Array.isArray(s.historial))   s.historial = [];
-      // IMPORTANTE: solo fijamos nextIdx a 0 si no existe en absoluto
       if (typeof s.nextIdx !== 'number' || s.nextIdx < 0) s.nextIdx = 0;
-      // Asegurar que nextIdx no esté fuera de rango
       if (s.nextIdx >= s.personas.length) s.nextIdx = 0;
       return s;
     }
@@ -462,112 +459,85 @@ function loadState() {
   return { personas:["Mario","Claudia","Katherine","Leila","Pacho"], nextIdx:0, casos:[], novedades:[], historial:[], turnoInicio:ini.toISOString(), turnoFin:fin.toISOString() };
 }
 
-// Guarda local siempre; si hay config JSONBin también sincroniza
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e) {}
   syncUp();
 }
 
-// ── JSONBIN SYNC ─────────────────────────────────────────────────────────
+// ── SYNC ─────────────────────────────────────────────────────────────────
 let syncTimer = null;
 
-function setSyncBadge(state, txt) {
+function setSyncBadge(estado, txt) {
   const b = document.getElementById('sync-badge');
   const t = document.getElementById('sync-txt');
-  if (!b || !t) return;
-  b.className = 'sync-badge ' + state;
-  t.textContent = txt;
+  if (b) b.className = 'sync-badge ' + estado;
+  if (t) t.textContent = txt;
 }
 
 async function syncUp() {
-  const cfg = loadCfg();
-  if (!cfg.apikey || !cfg.binid) return;
   setSyncBadge('busy', 'guardando…');
   try {
-    const r = await fetch('https://api.jsonbin.io/v3/b/' + cfg.binid, {
+    const r = await fetch('https://api.jsonbin.io/v3/b/' + BIN_ID, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'X-Master-Key': cfg.apikey,
+        'X-Master-Key': MASTER_KEY,
         'X-Bin-Versioning': 'false'
       },
       body: JSON.stringify(S)
     });
-    if (!r.ok) {
-      const txt = await r.text().catch(()=>'');
-      console.warn('syncUp HTTP ' + r.status, txt);
-      throw new Error(r.status);
-    }
-    setSyncBadge('ok', 'sincronizado · ' + new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'}));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    setSyncBadge('ok', 'guardado · ' + new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'}));
   } catch(e) {
     setSyncBadge('error', 'error al guardar');
-    console.warn('syncUp error', e);
+    console.warn('syncUp:', e.message);
   }
 }
 
 async function syncDown(silent) {
-  const cfg = loadCfg();
-  if (!cfg.apikey || !cfg.binid) { setSyncBadge('local', 'solo local'); return; }
   if (!silent) setSyncBadge('busy', 'cargando…');
   try {
-    // Usar Access Key para lectura pública si existe, sino Master Key
-    const readKey = cfg.accesskey || cfg.apikey;
-    const r = await fetch('https://api.jsonbin.io/v3/b/' + cfg.binid + '/latest', {
+    const r = await fetch('https://api.jsonbin.io/v3/b/' + BIN_ID + '/latest', {
       headers: {
-        'X-Master-Key': cfg.apikey,
-        'X-Access-Key': readKey,
-        'X-Bin-Meta': 'false'
+        'X-Master-Key': MASTER_KEY,
+        'X-Access-Key': ACCESS_KEY,
+        'X-Bin-Meta':   'false'
       }
     });
-    if (!r.ok) {
-      const txt = await r.text().catch(()=>'');
-      console.warn('syncDown HTTP ' + r.status, txt);
-      throw new Error(r.status);
-    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     const resp = await r.json();
-    console.log('syncDown raw:', resp);
-    // JSONBin v3 puede devolver { record: {...} } o directo {}
     const data = (resp && resp.record !== undefined) ? resp.record : resp;
+    console.log('syncDown OK — nextIdx:', data.nextIdx, '| casos:', (data.casos||[]).length);
     if (data && typeof data === 'object' && !data.init) {
       if (!Array.isArray(data.personas))    data.personas  = S.personas;
       if (!Array.isArray(data.novedades))   data.novedades = [];
       if (!Array.isArray(data.casos))       data.casos     = [];
       if (!Array.isArray(data.historial))   data.historial = [];
-      if (typeof data.nextIdx !== 'number') data.nextIdx   = 0;
+      if (typeof data.nextIdx !== 'number' || data.nextIdx < 0) data.nextIdx = 0;
+      if (data.nextIdx >= data.personas.length) data.nextIdx = 0;
       S = data;
       try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e) {}
       render();
     }
     setSyncBadge('ok', 'sincronizado · ' + new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'}));
   } catch(e) {
-    setSyncBadge('error', 'sin conexión — revisa F12');
-    console.warn('syncDown error', e);
+    setSyncBadge('error', 'sin conexión');
+    console.warn('syncDown:', e.message);
   }
 }
 
-// Auto-refresh cada 30 segundos
 function startAutoSync() {
   clearInterval(syncTimer);
-  const cfg = loadCfg();
-  if (!cfg.apikey || !cfg.binid) return;
   syncTimer = setInterval(() => syncDown(true), 30000);
 }
 
-async function guardarConfig() {
-  const apikey = document.getElementById('cfg-apikey').value.trim();
-  const binid  = document.getElementById('cfg-binid').value.trim();
-  if (!apikey || !binid) { toast('Completa los dos campos', '⚠'); return; }
-  saveCfg({ apikey, binid });
-  closeOv('ov-setup');
-  toast('Configuración guardada — sincronizando…', '↻');
-  await syncDown();
-  startAutoSync();
-}
-
+// Las funciones de config quedan vacías — ya no se necesitan
+function loadCfg() { return { apikey: MASTER_KEY, binid: BIN_ID }; }
+function saveCfg() {}
+async function guardarConfig() { closeOv('ov-setup'); toast('Ya configurado automáticamente ✓'); }
 function openSetup() {
-  const cfg = loadCfg();
-  document.getElementById('cfg-apikey').value = cfg.apikey || '';
-  document.getElementById('cfg-binid').value  = cfg.binid  || '';
+  document.getElementById('cfg-apikey').value = '(ya integrado en el código)';
+  document.getElementById('cfg-binid').value  = BIN_ID;
   document.getElementById('ov-setup').classList.add('show');
 }
 
@@ -923,8 +893,8 @@ applyTheme(localStorage.getItem('urgentes_theme') === 'light');
 
 render();
 setInterval(renderDate, 60000);
-// Carga datos remotos al abrir y arranca el auto-refresh
-syncDown();
+// Al abrir siempre carga desde JSONBin — datos compartidos para todos
+syncDown(false);
 startAutoSync();
 </script>
 </body>
